@@ -873,15 +873,13 @@ function st_sso_test(): never
         $msg = 'The provider answered. Issuer ' . $d['issuer'] . ', ' . count($keys) . ' signing key(s).' . (secret_setting('sso_client_secret') === '' ? ' Add the client secret before turning it on.' : '');
         flash('ok', $msg);
         audit('settings.sso_test', 'ok');
-    } catch (RuntimeException $ex) {
-        log_line('app.log', 'sso check failed: ' . $ex->getMessage());
-        flash('err', 'The check failed: ' . $ex->getMessage());
-        audit('settings.sso_test', 'failed');
     } catch (Throwable $ex) {
-        // Anything else (a database or JSON error) is logged in full and shown in plain words.
-        log_line('app.log', 'sso check error: ' . get_class($ex) . ': ' . $ex->getMessage());
-        flash('err', 'The check could not be completed. The details are in the application log.');
-        audit('settings.sso_test', 'error');
+        // Every error is logged in full. Provider errors (RuntimeException) are safe to show;
+        // anything else (a database or JSON error) is described in plain words only.
+        log_line('app.log', 'sso check failed: ' . get_class($ex) . ': ' . $ex->getMessage());
+        $known = $ex instanceof RuntimeException;
+        flash('err', $known ? 'The check failed: ' . $ex->getMessage() : 'The check could not be completed. The details are in the application log.');
+        audit('settings.sso_test', $known ? 'failed' : 'error');
     }
     redirect('/admin/settings/sso');
 }

@@ -75,15 +75,14 @@ function sso_callback(): string
         $_SESSION['sso'] = 1;
         audit('signin', 'single sign-on', (int)$u['id']);
         after_signin($u);
-    } catch (RuntimeException $ex) {
-        log_line('app.log', 'single sign-on failed: ' . $ex->getMessage());
-        audit('signin.sso_failed', $ex->getMessage());
-        return card_page('Single sign-on did not work', $ex->getMessage(), '<div class="actions"><a class="btn" href="/admin/login">Back to sign in</a></div>');
     } catch (Throwable $ex) {
-        // Unexpected errors are logged in full; the visitor sees no internal detail.
-        log_line('app.log', 'single sign-on error: ' . get_class($ex) . ': ' . $ex->getMessage());
-        audit('signin.sso_failed', 'unexpected error');
-        return card_page('Single sign-on did not work', 'Something went wrong on our side. Try again, or sign in with your password.', '<div class="actions"><a class="btn" href="/admin/login">Back to sign in</a></div>');
+        // Every error is logged in full. Sign-in problems (RuntimeException) are explained to the
+        // visitor; anything unexpected shows no internal detail.
+        log_line('app.log', 'single sign-on failed: ' . get_class($ex) . ': ' . $ex->getMessage());
+        $known = $ex instanceof RuntimeException;
+        audit('signin.sso_failed', $known ? $ex->getMessage() : 'unexpected error');
+        $why = $known ? $ex->getMessage() : 'Something went wrong on our side. Try again, or sign in with your password.';
+        return card_page('Single sign-on did not work', $why, '<div class="actions"><a class="btn" href="/admin/login">Back to sign in</a></div>');
     }
 }
 
