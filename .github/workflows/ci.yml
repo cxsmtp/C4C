@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: PHP version
+        run: php -v && php -m | grep -E -i 'pdo_sqlite|sodium|mbstring|fileinfo|openssl'
+      - name: Lint every PHP file
+        run: for f in $(git ls-files '*.php'); do php -l "$f" > /dev/null || exit 1; done
+      - name: Unit and integration tests
+        run: php tests/run.php
+      - name: Release manifest is current
+        run: php scripts/make-manifest.php --check
+      - name: No secrets or config committed
+        run: |
+          test ! -e app/config.php
+          ! git grep -n -I -E '(BEGIN (RSA|EC|OPENSSH) PRIVATE KEY|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|xox[baprs]-[A-Za-z0-9-]+)' -- . ':!tests'
+      - name: Smoke test every public page
+        run: |
+          mkdir -p /tmp/c4c
+          # The app and install keys are random for every run; nothing secret lives in the repository.
+          export INSTALL_KEY="$(php -r 'echo bin2hex(random_bytes(16));')"
+          php -r '$c = ["base_url" => "http://127.0.0.1:8099", "db_driver" => "sqlite", "db_path" => "/tmp/c4c/db.sqlite", "app_key" => bin2hex(random_bytes(32)), "install_key" => getenv("INSTALL_KEY")]; file_put_contents("app/config.php", "<?php return " . var_export($c, true) . ";\n");'
+          php -S 127.0.0.1:8099 tests/router.php > /tmp/c4c/server.log 2>&1 &
+          sleep 1
+          bash tests/smoke.sh http://127.0.0.1:8099
+      - name: Load test (short)
+        run: node loadtest/load.mjs http://127.0.0.1:8099 20 20 200

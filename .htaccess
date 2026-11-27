@@ -1,0 +1,49 @@
+# Call4Counsel: Apache / LiteSpeed configuration (Hostinger)
+Options -Indexes -MultiViews
+ServerSignature Off
+DirectoryIndex index.php
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  # Always use HTTPS and the bare domain.
+  RewriteCond %{HTTPS} !=on
+  RewriteCond %{HTTP:X-Forwarded-Proto} !=https
+  RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+  RewriteCond %{HTTP_HOST} ^www\.(.+)$ [NC]
+  RewriteRule ^ https://%1%{REQUEST_URI} [L,R=301]
+
+  # Block code, data, dotfiles and repository files from the web.
+  RewriteRule ^(app|storage|tests|scripts|loadtest|docs|\.git|\.github)(/|$) - [F,L]
+  RewriteCond %{REQUEST_URI} !^/\.well-known/
+  RewriteRule (^|/)\. - [F,L]
+  RewriteRule \.(sql|sqlite|log|md|lock|ini|sh|py|mjs|dist|bak|json|c4cb|gz)$ - [F,L]
+  RewriteRule ^(VERSION|SHA256SUMS|LICENSE)$ - [F,L]
+
+  # Only index.php runs PHP; other .php files are not reachable directly.
+  RewriteCond %{REQUEST_URI} !^/index\.php$
+  RewriteRule \.php$ - [F,L]
+
+  # Static assets are served directly; everything else (including /health and
+  # /.well-known/security.txt) goes to the router.
+  RewriteRule ^\.well-known/security\.txt$ index.php [L]
+  RewriteCond %{REQUEST_URI} ^/(assets/|robots\.txt$|favicon\.ico$)
+  RewriteCond %{REQUEST_FILENAME} -f
+  RewriteRule ^ - [L]
+  RewriteRule ^ index.php [L,QSA]
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "DENY"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always unset X-Powered-By
+  # Asset URLs carry ?v=<version>, so they can be cached for a year.
+  <FilesMatch "\.(css|js|svg|woff2?)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+</IfModule>
+
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/css application/javascript image/svg+xml application/json text/plain
+</IfModule>
