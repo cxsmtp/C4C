@@ -134,6 +134,26 @@ t('backup names are validated', function () {
     try { backup_path('../../app/config.php'); throw new LogicException('accepted'); } catch (RuntimeException) {}
 });
 
+echo "Single sign-on errors\n";
+t('https_json refuses plain http and returns a message', fn() => yes(is_string(https_json('http://example.com/x')), 'http accepted'));
+t('sso_finish without a started sign-in returns a message', function () {
+    $_SESSION = [];
+    $r = sso_finish('code', 'state');
+    same('The sign-in request expired. Try again.', $r);
+});
+t('sso_finish with a wrong state returns a message', function () {
+    $_SESSION = ['sso_flow' => ['state' => 'expected', 'nonce' => 'n', 'verifier' => 'v', 'at' => time()]];
+    yes(is_string(sso_finish('code', 'other')), 'wrong state accepted');
+    yes(!isset($_SESSION['sso_flow']), 'flow not cleared');
+});
+t('jwk_to_pem builds a key openssl accepts', function () {
+    $k = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+    $d = openssl_pkey_get_details($k)['rsa'];
+    $pem = jwk_to_pem(['n' => b64url($d['n']), 'e' => b64url($d['e'])]);
+    openssl_sign('hello', $sig, $k, OPENSSL_ALGO_SHA256);
+    same(1, openssl_verify('hello', $sig, $pem, OPENSSL_ALGO_SHA256));
+});
+
 echo "Estimates\n";
 t('weeks convert to an indicative range', function () {
     set_setting('pricing_rates', "Senior consultant|1000|day");

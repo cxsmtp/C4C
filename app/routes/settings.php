@@ -867,20 +867,17 @@ function st_email_test(): never
 function st_sso_test(): never
 {
     require_perm('settings.manage');
-    try {
-        $d = sso_discovery(true);
-        $keys = https_json($d['jwks_uri'])['keys'] ?? [];
-        $msg = 'The provider answered. Issuer ' . $d['issuer'] . ', ' . count($keys) . ' signing key(s).' . (secret_setting('sso_client_secret') === '' ? ' Add the client secret before turning it on.' : '');
-        flash('ok', $msg);
-        audit('settings.sso_test', 'ok');
-    } catch (Throwable $ex) {
-        // Every error is logged in full. Provider errors (RuntimeException) are safe to show;
-        // anything else (a database or JSON error) is described in plain words only.
-        log_line('app.log', 'sso check failed: ' . get_class($ex) . ': ' . $ex->getMessage());
-        $known = $ex instanceof RuntimeException;
-        flash('err', $known ? 'The check failed: ' . $ex->getMessage() : 'The check could not be completed. The details are in the application log.');
-        audit('settings.sso_test', $known ? 'failed' : 'error');
+    $d = sso_discovery(true);
+    $jwks = is_array($d) ? https_json($d['jwks_uri']) : $d;
+    if (is_string($jwks)) {
+        log_line('app.log', 'sso check failed: ' . $jwks);
+        flash('err', 'The check failed: ' . $jwks);
+        audit('settings.sso_test', 'failed');
+        redirect('/admin/settings/sso');
     }
+    $keys = is_array($jwks['keys'] ?? null) ? $jwks['keys'] : [];
+    flash('ok', 'The provider answered. Issuer ' . $d['issuer'] . ', ' . count($keys) . ' signing key(s).' . (secret_setting('sso_client_secret') === '' ? ' Add the client secret before turning it on.' : ''));
+    audit('settings.sso_test', 'ok');
     redirect('/admin/settings/sso');
 }
 

@@ -58,32 +58,32 @@ function mfa_post(): string
 function sso_callback(): string
 {
     no_store();
-    try {
-        if (g('error') !== '') throw new RuntimeException('The provider declined the sign-in: ' . mb_substr(g('error_description', 200) ?: g('error'), 0, 200));
-        $c = sso_finish(g('code', 2000), g('state', 200));
-        $u = one("SELECT * FROM users WHERE role = 'admin' AND (sso_subject = ? OR email = ?) ORDER BY sso_subject = ? DESC LIMIT 1", [$c['sub'], $c['email'], $c['sub']]);
-        if (!$u && setting('sso_auto_create') === '1') {
-            $roleKey = setting('sso_default_role', 'viewer');
-            if ($roleKey === 'owner' || !one('SELECT rkey FROM roles WHERE rkey = ?', [$roleKey])) $roleKey = 'viewer';
-            $id = insert('users', ['role' => 'admin', 'role_key' => $roleKey, 'client_id' => null, 'name' => mb_substr($c['name'], 0, 120), 'email' => $c['email'], 'password_hash' => null, 'active' => 1, 'sso_subject' => $c['sub'], 'created_at' => now()]);
-            audit('people.joined_by_sso', $c['email'] . ' as ' . $roleKey, $id);
-            $u = one('SELECT * FROM users WHERE id = ?', [$id]);
-        }
-        if (!$u || !(int)$u['active']) throw new RuntimeException('There is no active staff account for ' . $c['email'] . '. Ask an administrator to add you.');
-        if (!$u['sso_subject']) q('UPDATE users SET sso_subject = ? WHERE id = ?', [$c['sub'], $u['id']]);
-        login_user($u);
-        $_SESSION['sso'] = 1;
-        audit('signin', 'single sign-on', (int)$u['id']);
-        after_signin($u);
-    } catch (Throwable $ex) {
-        // Every error is logged in full. Sign-in problems (RuntimeException) are explained to the
-        // visitor; anything unexpected shows no internal detail.
-        log_line('app.log', 'single sign-on failed: ' . get_class($ex) . ': ' . $ex->getMessage());
-        $known = $ex instanceof RuntimeException;
-        audit('signin.sso_failed', $known ? $ex->getMessage() : 'unexpected error');
-        $why = $known ? $ex->getMessage() : 'Something went wrong on our side. Try again, or sign in with your password.';
-        return card_page('Single sign-on did not work', $why, '<div class="actions"><a class="btn" href="/admin/login">Back to sign in</a></div>');
+    $c = g('error') !== ''
+        ? 'The provider declined the sign-in: ' . mb_substr(g('error_description', 200) ?: g('error'), 0, 200)
+        : sso_finish(g('code', 2000), g('state', 200));
+    if (is_string($c)) return sso_failed($c);
+    $u = one("SELECT * FROM users WHERE role = 'admin' AND (sso_subject = ? OR email = ?) ORDER BY sso_subject = ? DESC LIMIT 1", [$c['sub'], $c['email'], $c['sub']]);
+    if (!$u && setting('sso_auto_create') === '1') {
+        $roleKey = setting('sso_default_role', 'viewer');
+        if ($roleKey === 'owner' || !one('SELECT rkey FROM roles WHERE rkey = ?', [$roleKey])) $roleKey = 'viewer';
+        $id = insert('users', ['role' => 'admin', 'role_key' => $roleKey, 'client_id' => null, 'name' => mb_substr($c['name'], 0, 120), 'email' => $c['email'], 'password_hash' => null, 'active' => 1, 'sso_subject' => $c['sub'], 'created_at' => now()]);
+        audit('people.joined_by_sso', $c['email'] . ' as ' . $roleKey, $id);
+        $u = one('SELECT * FROM users WHERE id = ?', [$id]);
     }
+    if (!$u || !(int)$u['active']) return sso_failed('There is no active staff account for ' . $c['email'] . '. Ask an administrator to add you.');
+    if (!$u['sso_subject']) q('UPDATE users SET sso_subject = ? WHERE id = ?', [$c['sub'], $u['id']]);
+    login_user($u);
+    $_SESSION['sso'] = 1;
+    audit('signin', 'single sign-on', (int)$u['id']);
+    after_signin($u);
+}
+
+/** Records a failed single sign-on and explains it. The message never holds internal detail. */
+function sso_failed(string $why): string
+{
+    log_line('app.log', 'single sign-on failed: ' . $why);
+    audit('signin.sso_failed', $why);
+    return card_page('Single sign-on did not work', $why, '<div class="actions"><a class="btn" href="/admin/login">Back to sign in</a></div>');
 }
 
 // ---------- two-step sign-in ----------

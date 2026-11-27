@@ -18,9 +18,10 @@ function sso_ready(): bool
     return setting('sso_enabled') === '1' && sso_provider_issuer() !== '' && setting('sso_client_id') !== '' && secret_setting('sso_client_secret') !== '';
 }
 
-function https_json(string $url, ?array $post = null): array
+/** Fetches JSON over HTTPS. Returns the decoded array, or an error message (string) safe to show. */
+function https_json(string $url, ?array $post = null): array|string
 {
-    if (!preg_match('#^https://[a-z0-9.-]+(:\d+)?/#i', $url)) throw new RuntimeException('Only https endpoints are allowed.');
+    if (!preg_match('#^https://[a-z0-9.-]+(:\d+)?/#i', $url)) return 'Only https endpoints are allowed.';
     $opts = ['http' => ['timeout' => 10, 'ignore_errors' => true, 'header' => "Accept: application/json\r\nUser-Agent: c4c-site\r\n"],
         'ssl' => ['verify_peer' => true, 'verify_peer_name' => true]];
     if ($post !== null) {
@@ -29,19 +30,21 @@ function https_json(string $url, ?array $post = null): array
         $opts['http']['content'] = http_build_query($post);
     }
     $body = @file_get_contents($url, false, stream_context_create($opts));
-    if ($body === false || strlen($body) > 1_000_000) throw new RuntimeException('The identity provider did not answer.');
+    if ($body === false || strlen($body) > 1_000_000) return 'The identity provider did not answer.';
     $data = json_decode($body, true);
-    if (!is_array($data)) throw new RuntimeException('The identity provider sent something unexpected.');
+    if (!is_array($data)) return 'The identity provider sent something unexpected.';
     return $data;
 }
 
-function sso_discovery(bool $fresh = false): array
+/** The provider's OpenID configuration, or an error message (string). */
+function sso_discovery(bool $fresh = false): array|string
 {
     $cached = json_decode(setting('sso_discovery_cache'), true);
     if (!$fresh && is_array($cached) && ($cached['_issuer'] ?? '') === sso_provider_issuer() && ($cached['_at'] ?? 0) > time() - 86400) return $cached;
     $d = https_json(sso_provider_issuer() . '/.well-known/openid-configuration');
+    if (is_string($d)) return $d;
     foreach (['authorization_endpoint', 'token_endpoint', 'jwks_uri', 'issuer'] as $k) {
-        if (empty($d[$k]) || !is_string($d[$k])) throw new RuntimeException("The provider's configuration has no $k.");
+        if (empty($d[$k]) || !is_string($d[$k])) return "The provider's configuration has no $k.";
     }
     $keep = array_intersect_key($d, array_flip(['authorization_endpoint', 'token_endpoint', 'jwks_uri', 'issuer'])) + ['_issuer' => sso_provider_issuer(), '_at' => time()];
     set_setting('sso_discovery_cache', json_encode($keep));
@@ -80,6 +83,11 @@ function sso_start(): never
 {
     if (!sso_ready()) abort();
     $d = sso_discovery();
+    if (is_string($d)) {
+        log_line('app.log', 'single sign-on start failed: ' . $d);
+        flash('err', 'Single sign-on is not available right now: ' . $d);
+        redirect('/admin/login');
+    }
     start_session();
     $state = b64url(random_bytes(24));
     $nonce = b64url(random_bytes(24));
@@ -94,29 +102,33 @@ function sso_start(): never
     exit;
 }
 
-/** Returns the verified claims, or throws with a message safe to show. */
-function sso_finish(string $code, string $state): array
+/** Returns the verified claims, or an error message (string) safe to show. */
+function sso_finish(string $code, string $state): array|string
 {
     $flow = $_SESSION['sso_flow'] ?? null;
     unset($_SESSION['sso_flow']);
-    if (!$flow || !hash_equals($flow['state'], $state) || time() - $flow['at'] > 600) throw new RuntimeException('The sign-in request expired. Try again.');
+    if (!$flow || !hash_equals($flow['state'], $state) || time() - $flow['at'] > 600) return 'The sign-in request expired. Try again.';
     $d = sso_discovery();
+    if (is_string($d)) return $d;
     $tok = https_json($d['token_endpoint'], [
         'grant_type' => 'authorization_code', 'code' => $code, 'redirect_uri' => base_url() . '/signin/sso/callback',
         'client_id' => setting('sso_client_id'), 'client_secret' => secret_setting('sso_client_secret'), 'code_verifier' => $flow['verifier'],
     ]);
+    if (is_string($tok)) return $tok;
     $jwt = (string)($tok['id_token'] ?? '');
     $parts = explode('.', $jwt);
-    if (count($parts) !== 3) throw new RuntimeException('The provider did not return an ID token.');
+    if (count($parts) !== 3) return 'The provider did not return an ID token.';
     $header = json_decode(b64url_decode($parts[0]), true);
     $claims = json_decode(b64url_decode($parts[1]), true);
-    if (!is_array($header) || !is_array($claims) || ($header['alg'] ?? '') !== 'RS256') throw new RuntimeException('Unsupported token.');
-    $keys = https_json($d['jwks_uri'])['keys'] ?? [];
+    if (!is_array($header) || !is_array($claims) || ($header['alg'] ?? '') !== 'RS256') return 'Unsupported token.';
+    $jwks = https_json($d['jwks_uri']);
+    if (is_string($jwks)) return $jwks;
+    $keys = is_array($jwks['keys'] ?? null) ? $jwks['keys'] : [];
     $pem = null;
     foreach ($keys as $k) {
         if (($k['kty'] ?? '') === 'RSA' && ($k['kid'] ?? null) === ($header['kid'] ?? null) && isset($k['n'], $k['e'])) { $pem = jwk_to_pem($k); break; }
     }
-    if (!$pem || openssl_verify($parts[0] . '.' . $parts[1], b64url_decode($parts[2]), $pem, OPENSSL_ALGO_SHA256) !== 1) throw new RuntimeException('The ID token signature is not valid.');
+    if (!$pem || openssl_verify($parts[0] . '.' . $parts[1], b64url_decode($parts[2]), $pem, OPENSSL_ALGO_SHA256) !== 1) return 'The ID token signature is not valid.';
     $aud = (array)($claims['aud'] ?? []);
     $now = time();
     $issuerOk = ($claims['iss'] ?? '') === $d['issuer']
@@ -124,12 +136,12 @@ function sso_finish(string $code, string $state): array
         || (str_contains($d['issuer'], '{tenantid}') && isset($claims['tid']) && ($claims['iss'] ?? '') === str_replace('{tenantid}', (string)$claims['tid'], $d['issuer']));
     if (!$issuerOk || !in_array(setting('sso_client_id'), $aud, true) || ($claims['exp'] ?? 0) < $now - 60 || ($claims['iat'] ?? 0) > $now + 300
         || !hash_equals($flow['nonce'], (string)($claims['nonce'] ?? ''))) {
-        throw new RuntimeException('The ID token was not issued for this site.');
+        return 'The ID token was not issued for this site.';
     }
     $email = strtolower((string)($claims['email'] ?? $claims['preferred_username'] ?? ''));
-    if (!valid_email($email)) throw new RuntimeException('Your company account has no email address.');
-    if (array_key_exists('email_verified', $claims) && $claims['email_verified'] === false) throw new RuntimeException('Your email address is not verified with the provider.');
+    if (!valid_email($email)) return 'Your company account has no email address.';
+    if (array_key_exists('email_verified', $claims) && $claims['email_verified'] === false) return 'Your email address is not verified with the provider.';
     $domains = array_filter(array_map('trim', explode(',', strtolower(setting('sso_allowed_domains')))));
-    if ($domains && !in_array(substr(strrchr($email, '@'), 1), $domains, true)) throw new RuntimeException('Your email domain is not allowed to sign in here.');
+    if ($domains && !in_array(substr(strrchr($email, '@'), 1), $domains, true)) return 'Your email domain is not allowed to sign in here.';
     return ['sub' => (string)$claims['sub'], 'email' => $email, 'name' => (string)($claims['name'] ?? $email)];
 }
